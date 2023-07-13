@@ -160,7 +160,6 @@ def embed_func(
     row: pd.Series,
     *,
     text: str,
-    id: str,
     num_perm: int,
     ngram_size: int,
     min_length: int,
@@ -215,7 +214,7 @@ def embed_func(
     >>> res["__id__"]
     0
     """
-    content, idx = row[text], row[id]
+    content, idx = row[text], row["__dedup_id"]
     a, b = permutations
     masks: np.ndarray = np.full(shape=num_perm, dtype=np.uint64, fill_value=MAX_HASH)
     tokens: Set[str] = {
@@ -337,7 +336,9 @@ class DataFrameDedup(DataFrameOperand, DataFrameOperandMixin):
             out = op.outputs[0]
             union_find = ctx.get_remote_object(op.union_find_name, op.worker_addr)
             uf = union_find.get_self()
-            ctx[out.key] = input_data[input_data["id"].map(lambda x: uf.find(x) == x)]
+            ctx[out.key] = input_data[
+                input_data["__dedup_id"].map(lambda x: uf.find(x) == x)
+            ].drop(columns="__dedup_id")
 
     @classmethod
     def tile(cls, op: "DataFrameDedup"):
@@ -349,7 +350,23 @@ class DataFrameDedup(DataFrameOperand, DataFrameOperandMixin):
         union_find_name = str(uuid.uuid4())
         ctx.create_remote_object(union_find_name, UnionFind, remote_addr=op.worker_addr)
 
-        embedded = in_df.apply(
+        def gen_id_column(df):
+            from xoscar._utils import new_random_id
+
+            df["__dedup_id"] = [new_random_id(32) for _ in range(len(df))]
+
+            return df
+
+        new_dtypes = in_df.dtypes.copy()
+        new_dtypes["__dedup_id"] = "str"
+        in_df_with_id = in_df.map_chunk(
+            gen_id_column, output_type="dataframe", dtypes=new_dtypes
+        )
+
+        in_df_with_id = yield from recursive_tile(in_df_with_id)
+        yield in_df_with_id.chunks
+
+        embedded = in_df_with_id.apply(
             op.func,
             axis=1,
             output_type="dataframe",
@@ -382,12 +399,8 @@ class DataFrameDedup(DataFrameOperand, DataFrameOperandMixin):
 
         # dedup stage
         dedup_chunks = []
-        for c in in_df.chunks:
+        for c in in_df_with_id.chunks:
             new_shape = c.shape
-
-            new_index_value, new_columns_value = c.index_value, c.columns_value
-
-            new_dtypes = out_df.dtypes
 
             new_op = op.copy().reset_key()
             new_op.union_find_name = union_find_name
@@ -396,11 +409,11 @@ class DataFrameDedup(DataFrameOperand, DataFrameOperandMixin):
             dedup_chunks.append(
                 new_op.new_chunk(
                     [c] + chunks,
-                    shape=tuple((np.nan, new_shape[1])),
+                    shape=(np.nan, new_shape[1] - 1),
                     index=c.index,
-                    dtypes=new_dtypes,
-                    index_value=new_index_value,
-                    columns_value=new_columns_value,
+                    dtypes=out_df.dtypes,
+                    index_value=c.index_value,
+                    columns_value=out_df.columns_value,
                 )
             )
 
@@ -426,8 +439,7 @@ class DataFrameDedup(DataFrameOperand, DataFrameOperandMixin):
 
 def df_dedup(
     df: pd.DataFrame,
-    text: Any = "text",
-    id: Any = "id",
+    col: Any,
     threshold: float = 0.7,
     num_perm: int = 256,
     min_length: int = 5,
@@ -445,11 +457,8 @@ def df_dedup(
 
     Parameters
     ----------
-    text : str, default 'text'
+    col : str
         The column of the DataFrame on which to calculate hash values.
-
-    id : str, default 'id'
-        The column to store the index. If df has no such column, it will be generated.
 
     threshold : float, default 0.7
         The Jaccard similarity threshold to use in the MinHashLSH.
@@ -488,7 +497,6 @@ def df_dedup(
     >>> words = list("abcdefghijklmnopqrstuvwxyz")
     >>> df = pd.DataFrame(
     ...     {
-    ...         "id": np.arange(20),
     ...         "text": [
     ...             " ".join(["".join(np.random.choice(words, 5)) for i in range(50)])
     ...             for _ in np.arange(10)
@@ -496,7 +504,7 @@ def df_dedup(
     ...         * 2,
     ...     }
     ... )
-    >>> res = df.dedup()
+    >>> res = df.dedup(col="text")
     >>> res.execute()
 
     """
@@ -520,11 +528,8 @@ def df_dedup(
             )
 
     # Check if the DataFrame contains the text column
-    if text not in df.dtypes.index:
-        raise ValueError(f"{text} column not found in the DataFrame")
-
-    if id not in df.dtypes.index:
-        df[id] = range(0, len(df))
+    if col not in df.dtypes.index:
+        raise ValueError(f"{col} column not found in the DataFrame")
 
     B, R = optimal_param(threshold, num_perm)
 
@@ -545,8 +550,7 @@ def df_dedup(
 
     func = partial(
         embed_func,
-        text=text,
-        id=id,
+        text=col,
         num_perm=num_perm,
         hashranges=HASH_RANGES,
         ngram_size=ngram,
