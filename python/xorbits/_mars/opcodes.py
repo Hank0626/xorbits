@@ -393,7 +393,6 @@ PIVOT_TABLE = 744
 NLARGEST = 745
 DEDUP = 746
 
-
 FUSE = 801
 
 # table like input for tensor

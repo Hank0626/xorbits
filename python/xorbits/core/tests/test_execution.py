@@ -221,6 +221,29 @@ def test_len(setup, dummy_df, dummy_int_series, dummy_int_2d_array):
     assert need_to_execute(obj)
 
 
+def test_shape(setup, dummy_df, dummy_int_series, empty_df):
+    assert need_to_execute(dummy_df)
+    assert need_to_execute(dummy_int_series)
+    assert need_to_execute(empty_df)
+
+    assert dummy_df.shape == (3, 2)
+    assert dummy_int_series.shape == (5,)
+    assert empty_df.shape == (0, 0)
+
+    filtered = dummy_df[dummy_df["foo"] < 2]
+    assert filtered.shape == (2, 2)
+    assert not need_to_execute(filtered)
+
+    filtered = dummy_int_series[dummy_int_series < 2]
+    assert filtered.shape == (1,)
+    assert not need_to_execute(filtered)
+
+    obj = spawn(lambda _: 1)
+    with pytest.raises(TypeError):
+        obj.shape
+    assert need_to_execute(obj)
+
+
 def test_is_in_final_results(setup, dummy_df, dummy_str_series):
     assert not _is_in_final_results(dummy_df, [])
     assert _is_in_final_results(dummy_df, [dummy_df])
@@ -301,3 +324,16 @@ def test_interactive_execution(setup, ip):
     ip.run_cell(raw_cell="df + 3")
     r = ip.run_cell(raw_cell="xorbits.core.execution.need_to_execute(_)")
     assert r.result
+
+
+def test_getitem(setup):
+    import pandas as pd
+
+    from ... import pandas as xpd
+
+    data = {"a": ["abc", "def"]}
+    df = pd.DataFrame(data)
+    xdf = xpd.DataFrame(data)
+    result = xdf[xdf["a"].str[0] == "a"]
+    expected = df[df["a"].str[0] == "a"]
+    pd.testing.assert_frame_equal(result.to_pandas(), expected)
