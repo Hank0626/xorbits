@@ -220,7 +220,9 @@ class SubtaskProcessor:
 
         # from data_key to results
         for chunk in chunk_graph.topological_iter():
-            if chunk.key not in self._processor_context:
+            if chunk.key not in self._processor_context and not isinstance(
+                chunk.op, Fetch
+            ):
                 # since `op.execute` may be a time-consuming operation,
                 # we make it run in a thread pool to not block current thread.
                 logger.debug(
