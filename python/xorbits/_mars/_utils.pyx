@@ -28,6 +28,11 @@ from enum import Enum
 from functools import lru_cache, partial
 
 cimport cython
+from cython cimport view
+from cython.operator cimport dereference as deref
+from cython.operator cimport preincrement as inc
+from libc.stdint cimport int64_t
+from libcpp.unordered_map cimport unordered_map
 
 import cloudpickle
 import numpy as np
@@ -36,6 +41,7 @@ import pandas as pd
 from cpython cimport PyBytes_FromStringAndSize
 from libc.stdint cimport uint8_t, uint32_t
 from xoscar._utils cimport TypeDispatcher, to_binary, to_str
+
 from xoscar._utils import NamedType
 
 try:
@@ -359,36 +365,39 @@ cdef class Timer:
 
 
 cdef class CUnionFind:
-    cdef dict parent
+    cdef unordered_map[int64_t, int64_t] parent
     def __init__(self):
-        self.parent = {}
+        pass
 
-    cpdef find(self, bytes x):
-        cdef bytes px
-        if x not in self.parent:
+    cpdef int64_t find(self, int64_t x):
+        cdef unordered_map[int64_t, int64_t].iterator it
+        it = self.parent.find(x)
+        if it == self.parent.end():
             return x
 
-        if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])
+        if deref(it).second != x:
+            self.parent[x] = self.find(deref(it).second)
 
         return self.parent[x]
 
-    cpdef union_(self, bytes x, bytes y):
-        cdef bytes px, py
+    cpdef int64_t union_(self, int64_t x, int64_t y):
+        cdef int64_t px, py
         px = self.find(x)
         py = self.find(y)
-        min_val = min(px, py)
-        self.parent[px] = self.parent[py] = min(px, py)
+        cdef int64_t min_val = min(px, py)
+        self.parent[px] = self.parent[py] = min_val
         return min_val
 
     cpdef union_uf(self, CUnionFind uf):
-        cdef bytes x
-        for x in uf.parent:
-            if x not in self.parent:
-                self.parent[x] = uf.parent[x]
+        cdef int64_t x
+        cdef unordered_map[int64_t, int64_t].iterator it = uf.parent.begin()
+        while it != uf.parent.end():
+            x = deref(it).first
+            if self.parent.find(x) == self.parent.end():
+                self.parent[x] = deref(it).second
             else:
-                self.parent[x] = self.union_(self.find(x), uf.find(x))
-
+                self.parent[x] = self.union_(self.find(x), uf.find(deref(it).first))
+            inc(it)
 
 
 __all__ = ['to_str', 'to_binary', 'to_text', 'tokenize', 'tokenize_int',

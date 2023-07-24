@@ -311,7 +311,10 @@ class DataFrameDedup(DataFrameOperand, DataFrameOperandMixin):
         def gen_id_column(df):
             from xoscar._utils import new_random_id
 
-            df["__dedup_id"] = [new_random_id(16) for _ in range(len(df))]
+            df["__dedup_id"] = [
+                int.from_bytes(new_random_id(7), byteorder="big")
+                for _ in range(len(df))
+            ]
 
             return df
 
